@@ -1,0 +1,1019 @@
+import React, { useState } from 'react';
+import { Calendar, User, Clock, CheckCircle, AlertCircle } from 'lucide-react';
+
+const JiraResourceAllocator = () => {
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [assignments, setAssignments] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  // Mock JIRA Service - Returns 100 prioritized tasks
+  const mockJiraService = () => {
+    const skills = ['java', 'oracle', 'react', 'python', 'nodejs', 'angular', 'docker', 'kubernetes'];
+    const priorities = ['High', 'Medium', 'Low'];
+    
+    return Array.from({ length: 100 }, (_, i) => ({
+      id: `JIRA-${1000 + i}`,
+      title: `Task ${i + 1}: ${['Implement feature', 'Fix bug', 'Refactor code', 'Add tests', 'Update documentation'][i % 5]}`,
+      priority: priorities[Math.floor(i / 33)],
+      skillsNeeded: skills.slice(0, Math.floor(Math.random() * 3) + 1),
+      storyPoints: Math.floor(Math.random() * 8) + 1, // 1-8 days
+      description: `This task requires expertise in ${skills.slice(0, Math.floor(Math.random() * 2) + 1).join(', ')}`
+    }));
+  };
+
+  // Mock Calendar Service - Returns available resources
+  const mockCalendarService = (start, end) => {
+    const resources = [
+      { id: 'dev-001', name: 'Alice Johnson', availability: 0.8 },
+      { id: 'dev-002', name: 'Bob Smith', availability: 1.0 },
+      { id: 'dev-003', name: 'Carol Davis', availability: 0.6 },
+      { id: 'dev-004', name: 'David Wilson', availability: 0.9 },
+      { id: 'dev-005', name: 'Emma Brown', availability: 0.7 },
+      { id: 'dev-006', name: 'Frank Miller', availability: 0.8 },
+      { id: 'dev-007', name: 'Grace Lee', availability: 1.0 },
+      { id: 'dev-008', name: 'Henry Chen', availability: 0.5 }
+    ];
+
+    const startD = new Date(start);
+    const endD = new Date(end);
+    const workingDays = Math.max(1, Math.floor((endD - startD) / (1000 * 60 * 60 * 24)) * 5/7); // Approximate working days
+
+    return resources.map(resource => ({
+      ...resource,
+      availableDays: Math.floor(workingDays * resource.availability),
+      assignedDays: 0
+    }));
+  };
+
+  // Mock Team Skills Service
+  const mockTeamSkillsService = () => {
+    return {
+      'dev-001': ['java', 'oracle', 'docker'],
+      'dev-002': ['react', 'nodejs', 'javascript'],
+      'dev-003': ['python', 'docker', 'kubernetes'],
+      'dev-004': ['java', 'react', 'nodejs'],
+      'dev-005': ['oracle', 'python', 'java'],
+      'dev-006': ['angular', 'nodejs', 'docker'],
+      'dev-007': ['react', 'javascript', 'kubernetes'],
+      'dev-008': ['java', 'python', 'oracle']
+    };
+  };
+
+  // Resource allocation algorithm
+  const allocateResources = (tasks, resources, skillMatrix) => {
+    const assignments = [];
+    const resourceCapacity = { ...resources.reduce((acc, r) => ({ ...acc, [r.id]: r.availableDays }), {}) };
+
+    // Sort tasks by priority (High -> Medium -> Low)
+    const sortedTasks = [...tasks].sort((a, b) => {
+      const priorityOrder = { 'High': 3, 'Medium': 2, 'Low': 1 };
+      return priorityOrder[b.priority] - priorityOrder[a.priority];
+    });
+
+    for (const task of sortedTasks) {
+      let bestResource = null;
+      let maxSkillMatch = 0;
+
+      // Find the best resource for this task
+      for (const resource of resources) {
+        const resourceSkills = skillMatrix[resource.id] || [];
+        const skillMatch = task.skillsNeeded.filter(skill => resourceSkills.includes(skill)).length;
+        const skillRatio = skillMatch / task.skillsNeeded.length;
+
+        // Check if resource has capacity and skill match
+        if (resourceCapacity[resource.id] >= task.storyPoints && skillRatio > maxSkillMatch) {
+          maxSkillMatch = skillRatio;
+          bestResource = resource;
+        }
+      }
+
+      // Assign task to best resource
+      if (bestResource && maxSkillMatch > 0) {
+        resourceCapacity[bestResource.id] -= task.storyPoints;
+        assignments.push({
+          task,
+          resource: bestResource,
+          skillMatch: maxSkillMatch,
+          status: 'assigned'
+        });
+      } else {
+        // Task couldn't be assigned
+        assignments.push({
+          task,
+          resource: null,
+          skillMatch: 0,
+          status: 'unassigned'
+        });
+      }
+    }
+
+    return assignments;
+  };
+
+  const handleAllocation = async () => {
+    if (!startDate || !endDate) {
+      setError('Please select both start and end dates');
+      return;
+    }
+
+    if (new Date(startDate) >= new Date(endDate)) {
+      setError('End date must be after start date');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+
+    try {
+      // Simulate API calls with delays
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      const tasks = mockJiraService();
+      const resources = mockCalendarService(startDate, endDate);
+      const skillMatrix = mockTeamSkillsService();
+      
+      const result = allocateResources(tasks, resources, skillMatrix);
+      setAssignments(result);
+    } catch (err) {
+      setError('Failed to allocate resources. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getStatusColor = (status) => {
+    return status === 'assigned' ? 'text-green-600' : 'text-red-600';
+  };
+
+  const getStatusIcon = (status) => {
+    return status === 'assigned' ? <CheckCircle className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />;
+  };
+
+  const assignedTasks = assignments.filter(a => a.status === 'assigned');
+  const unassignedTasks = assignments.filter(a => a.status === 'unassigned');
+
+  return (
+    <div className="min-h-screen bg-gray-50 p-6">
+      <div className="max-w-7xl mx-auto">
+        <div className="bg-white rounded-lg shadow-lg p-8 mb-6">
+          <h1 className="text-3xl font-bold text-gray-800 mb-8 flex items-center gap-3">
+            <Calendar className="w-8 h-8 text-blue-600" />
+            JIRA Resource Allocation System
+          </h1>
+
+          {/* Date Selection */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Sprint Start Date
+              </label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Sprint End Date
+              </label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div className="flex items-end">
+              <button
+                onClick={handleAllocation}
+                disabled={loading}
+                className="w-full bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+              >
+                {loading ? 'Allocating...' : 'Allocate Resources'}
+              </button>
+            </div>
+          </div>
+
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-md p-4 mb-6">
+              <div className="flex items-center">
+                <AlertCircle className="w-5 h-5 text-red-400 mr-2" />
+                <span className="text-red-800">{error}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Summary Statistics */}
+          {assignments.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+              <div className="bg-blue-50 p-4 rounded-lg">
+                <div className="text-2xl font-bold text-blue-600">{assignments.length}</div>
+                <div className="text-sm text-blue-800">Total Tasks</div>
+              </div>
+              <div className="bg-green-50 p-4 rounded-lg">
+                <div className="text-2xl font-bold text-green-600">{assignedTasks.length}</div>
+                <div className="text-sm text-green-800">Assigned Tasks</div>
+              </div>
+              <div className="bg-red-50 p-4 rounded-lg">
+                <div className="text-2xl font-bold text-red-600">{unassignedTasks.length}</div>
+                <div className="text-sm text-red-800">Unassigned Tasks</div>
+              </div>
+              <div className="bg-purple-50 p-4 rounded-lg">
+                <div className="text-2xl font-bold text-purple-600">
+                  {assignments.length > 0 ? Math.round((assignedTasks.length / assignments.length) * 100) : 0}%
+                </div>
+                <div className="text-sm text-purple-800">Success Rate</div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Assignment Results */}
+        {assignments.length > 0 && (
+          <div className="bg-white rounded-lg shadow-lg p-6">
+            <h2 className="text-2xl font-bold text-gray-800 mb-6">Task Assignments</h2>
+            
+            <div className="overflow-x-auto">
+              <table className="min-w-full table-auto">
+                <thead>
+                  <tr className="bg-gray-50">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Status
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Task ID
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Title
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Priority
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Skills Needed
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Story Points
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Assigned To
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Skill Match
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {assignments.slice(0, 50).map((assignment, index) => (
+                    <tr key={index} className="hover:bg-gray-50">
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <div className={`flex items-center gap-2 ${getStatusColor(assignment.status)}`}>
+                          {getStatusIcon(assignment.status)}
+                          <span className="text-sm font-medium capitalize">
+                            {assignment.status}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                        {assignment.task.id}
+                      </td>
+                      <td className="px-4 py-4 text-sm text-gray-900 max-w-xs truncate">
+                        {assignment.task.title}
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                          assignment.task.priority === 'High' ? 'bg-red-100 text-red-800' :
+                          assignment.task.priority === 'Medium' ? 'bg-yellow-100 text-yellow-800' :
+                          'bg-green-100 text-green-800'
+                        }`}>
+                          {assignment.task.priority}
+                        </span>
+                      </td>
+                      <td className="px-4 py-4 text-sm text-gray-900">
+                        <div className="flex flex-wrap gap-1">
+                          {assignment.task.skillsNeeded.map((skill, idx) => (
+                            <span key={idx} className="inline-flex px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded">
+                              {skill}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900 text-center">
+                        <div className="flex items-center justify-center gap-1">
+                          <Clock className="w-4 h-4" />
+                          {assignment.task.storyPoints}
+                        </div>
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {assignment.resource ? (
+                          <div className="flex items-center gap-2">
+                            <User className="w-4 h-4" />
+                            {assignment.resource.name}
+                          </div>
+                        ) : (
+                          <span className="text-gray-400 italic">Unassigned</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900 text-center">
+                        {assignment.resource ? 
+                          `${Math.round(assignment.skillMatch * 100)}%` : 
+                          '0%'
+                        }
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            
+            {assignments.length > 50 && (
+              <div className="mt-4 text-center text-sm text-gray-500">
+                Showing first 50 of {assignments.length} tasks
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default JiraResourceAllocator;
+
+
+------------------
+
+// Main Spring Boot Application
+@SpringBootApplication
+@RestController
+@CrossOrigin(origins = "*")
+public class JiraResourceAllocationApplication {
+
+    @Autowired
+    private ResourceAllocationService resourceAllocationService;
+
+    public static void main(String[] args) {
+        SpringApplication.run(JiraResourceAllocationApplication.class, args);
+    }
+
+    @PostMapping("/api/allocate-resources")
+    public ResponseEntity<AllocationResponse> allocateResources(
+            @RequestBody AllocationRequest request) {
+        try {
+            AllocationResponse response = resourceAllocationService.allocateResources(
+                request.getStartDate(), request.getEndDate());
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(new AllocationResponse(Collections.emptyList(), e.getMessage()));
+        }
+    }
+}
+
+// Service Layer
+@Service
+public class ResourceAllocationService {
+
+    @Autowired
+    private JiraService jiraService;
+    
+    @Autowired
+    private CalendarService calendarService;
+    
+    @Autowired
+    private TeamSkillsService teamSkillsService;
+
+    public AllocationResponse allocateResources(LocalDate startDate, LocalDate endDate) {
+        // Get tasks from JIRA
+        List<JiraTask> tasks = jiraService.getTasksByPriority(100);
+        
+        // Get available resources
+        List<Resource> resources = calendarService.getAvailableResources(startDate, endDate);
+        
+        // Get team skills
+        Map<String, List<String>> skillMatrix = teamSkillsService.getTeamSkills();
+        
+        // Allocate resources
+        List<TaskAssignment> assignments = allocateTasksToResources(tasks, resources, skillMatrix);
+        
+        return new AllocationResponse(assignments, "Success");
+    }
+
+    private List<TaskAssignment> allocateTasksToResources(
+            List<JiraTask> tasks, List<Resource> resources, Map<String, List<String>> skillMatrix) {
+        
+        List<TaskAssignment> assignments = new ArrayList<>();
+        Map<String, Integer> resourceCapacity = new HashMap<>();
+        
+        // Initialize resource capacity
+        for (Resource resource : resources) {
+            resourceCapacity.put(resource.getId(), resource.getAvailableDays());
+        }
+        
+        // Sort tasks by priority (High -> Medium -> Low)
+        tasks.sort((a, b) -> {
+            Map<String, Integer> priorityOrder = Map.of("High", 3, "Medium", 2, "Low", 1);
+            return priorityOrder.get(b.getPriority()) - priorityOrder.get(a.getPriority());
+        });
+        
+        for (JiraTask task : tasks) {
+            Resource bestResource = null;
+            double maxSkillMatch = 0;
+            
+            // Find the best resource for this task
+            for (Resource resource : resources) {
+                List<String> resourceSkills = skillMatrix.getOrDefault(resource.getId(), Collections.emptyList());
+                long skillMatch = task.getSkillsNeeded().stream()
+                    .filter(resourceSkills::contains)
+                    .count();
+                double skillRatio = (double) skillMatch / task.getSkillsNeeded().size();
+                
+                // Check if resource has capacity and skill match
+                if (resourceCapacity.get(resource.getId()) >= task.getStoryPoints() && 
+                    skillRatio > maxSkillMatch) {
+                    maxSkillMatch = skillRatio;
+                    bestResource = resource;
+                }
+            }
+            
+            // Assign task to best resource
+            if (bestResource != null && maxSkillMatch > 0) {
+                resourceCapacity.put(bestResource.getId(), 
+                    resourceCapacity.get(bestResource.getId()) - task.getStoryPoints());
+                assignments.add(new TaskAssignment(task, bestResource, maxSkillMatch, "assigned"));
+            } else {
+                assignments.add(new TaskAssignment(task, null, 0, "unassigned"));
+            }
+        }
+        
+        return assignments;
+    }
+}
+
+// Mock JIRA Service
+@Service
+public class JiraService {
+
+    public List<JiraTask> getTasksByPriority(int limit) {
+        List<JiraTask> tasks = new ArrayList<>();
+        String[] skills = {"java", "oracle", "react", "python", "nodejs", "angular", "docker", "kubernetes"};
+        String[] priorities = {"High", "Medium", "Low"};
+        String[] taskTypes = {"Implement feature", "Fix bug", "Refactor code", "Add tests", "Update documentation"};
+        
+        Random random = new Random();
+        
+        for (int i = 0; i < limit; i++) {
+            List<String> skillsNeeded = new ArrayList<>();
+            int numSkills = random.nextInt(3) + 1;
+            for (int j = 0; j < numSkills; j++) {
+                skillsNeeded.add(skills[random.nextInt(skills.length)]);
+            }
+            
+            JiraTask task = new JiraTask(
+                "JIRA-" + (1000 + i),
+                taskTypes[i % taskTypes.length] + " " + (i + 1),
+                priorities[i / 33],
+                skillsNeeded,
+                random.nextInt(8) + 1,
+                "Task description for " + (i + 1)
+            );
+            tasks.add(task);
+        }
+        
+        return tasks;
+    }
+}
+
+// Mock Calendar Service
+@Service
+public class CalendarService {
+
+    public List<Resource> getAvailableResources(LocalDate startDate, LocalDate endDate) {
+        List<Resource> resources = Arrays.asList(
+            new Resource("dev-001", "Alice Johnson", 0.8),
+            new Resource("dev-002", "Bob Smith", 1.0),
+            new Resource("dev-003", "Carol Davis", 0.6),
+            new Resource("dev-004", "David Wilson", 0.9),
+            new Resource("dev-005", "Emma Brown", 0.7),
+            new Resource("dev-006", "Frank Miller", 0.8),
+            new Resource("dev-007", "Grace Lee", 1.0),
+            new Resource("dev-008", "Henry Chen", 0.5)
+        );
+        
+        long workingDays = ChronoUnit.DAYS.between(startDate, endDate) * 5 / 7; // Approximate working days
+        workingDays = Math.max(1, workingDays);
+        
+        for (Resource resource : resources) {
+            resource.setAvailableDays((int) (workingDays * resource.getAvailability()));
+        }
+        
+        return resources;
+    }
+}
+
+// Mock Team Skills Service
+@Service
+public class TeamSkillsService {
+
+    public Map<String, List<String>> getTeamSkills() {
+        Map<String, List<String>> skillMatrix = new HashMap<>();
+        skillMatrix.put("dev-001", Arrays.asList("java", "oracle", "docker"));
+        skillMatrix.put("dev-002", Arrays.asList("react", "nodejs", "javascript"));
+        skillMatrix.put("dev-003", Arrays.asList("python", "docker", "kubernetes"));
+        skillMatrix.put("dev-004", Arrays.asList("java", "react", "nodejs"));
+        skillMatrix.put("dev-005", Arrays.asList("oracle", "python", "java"));
+        skillMatrix.put("dev-006", Arrays.asList("angular", "nodejs", "docker"));
+        skillMatrix.put("dev-007", Arrays.asList("react", "javascript", "kubernetes"));
+        skillMatrix.put("dev-008", Arrays.asList("java", "python", "oracle"));
+        return skillMatrix;
+    }
+}
+
+// Data Transfer Objects
+public class AllocationRequest {
+    private LocalDate startDate;
+    private LocalDate endDate;
+    
+    // Constructors, getters, setters
+    public AllocationRequest() {}
+    
+    public AllocationRequest(LocalDate startDate, LocalDate endDate) {
+        this.startDate = startDate;
+        this.endDate = endDate;
+    }
+    
+    public LocalDate getStartDate() { return startDate; }
+    public void setStartDate(LocalDate startDate) { this.startDate = startDate; }
+    
+    public LocalDate getEndDate() { return endDate; }
+    public void setEndDate(LocalDate endDate) { this.endDate = endDate; }
+}
+
+public class AllocationResponse {
+    private List<TaskAssignment> assignments;
+    private String message;
+    
+    public AllocationResponse() {}
+    
+    public AllocationResponse(List<TaskAssignment> assignments, String message) {
+        this.assignments = assignments;
+        this.message = message;
+    }
+    
+    public List<TaskAssignment> getAssignments() { return assignments; }
+    public void setAssignments(List<TaskAssignment> assignments) { this.assignments = assignments; }
+    
+    public String getMessage() { return message; }
+    public void setMessage(String message) { this.message = message; }
+}
+
+// Domain Objects
+public class JiraTask {
+    private String id;
+    private String title;
+    private String priority;
+    private List<String> skillsNeeded;
+    private int storyPoints;
+    private String description;
+    
+    public JiraTask() {}
+    
+    public JiraTask(String id, String title, String priority, List<String> skillsNeeded, 
+                   int storyPoints, String description) {
+        this.id = id;
+        this.title = title;
+        this.priority = priority;
+        this.skillsNeeded = skillsNeeded;
+        this.storyPoints = storyPoints;
+        this.description = description;
+    }
+    
+    // Getters and setters
+    public String getId() { return id; }
+    public void setId(String id) { this.id = id; }
+    
+    public String getTitle() { return title; }
+    public void setTitle(String title) { this.title = title; }
+    
+    public String getPriority() { return priority; }
+    public void setPriority(String priority) { this.priority = priority; }
+    
+    public List<String> getSkillsNeeded() { return skillsNeeded; }
+    public void setSkillsNeeded(List<String> skillsNeeded) { this.skillsNeeded = skillsNeeded; }
+    
+    public int getStoryPoints() { return storyPoints; }
+    public void setStoryPoints(int storyPoints) { this.storyPoints = storyPoints; }
+    
+    public String getDescription() { return description; }
+    public void setDescription(String description) { this.description = description; }
+}
+
+public class Resource {
+    private String id;
+    private String name;
+    private double availability;
+    private int availableDays;
+    
+    public Resource() {}
+    
+    public Resource(String id, String name, double availability) {
+        this.id = id;
+        this.name = name;
+        this.availability = availability;
+    }
+    
+    // Getters and setters
+    public String getId() { return id; }
+    public void setId(String id) { this.id = id; }
+    
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
+    
+    public double getAvailability() { return availability; }
+    public void setAvailability(double availability) { this.availability = availability; }
+    
+    public int getAvailableDays() { return availableDays; }
+    public void setAvailableDays(int availableDays) { this.availableDays = availableDays; }
+}
+
+public class TaskAssignment {
+    private JiraTask task;
+    private Resource resource;
+    private double skillMatch;
+    private String status;
+    
+    public TaskAssignment() {}
+    
+    public TaskAssignment(JiraTask task, Resource resource, double skillMatch, String status) {
+        this.task = task;
+        this.resource = resource;
+        this.skillMatch = skillMatch;
+        this.status = status;
+    }
+    
+    // Getters and setters
+    public JiraTask getTask() { return task; }
+    public void setTask(JiraTask task) { this.task = task; }
+    
+    public Resource getResource() { return resource; }
+    public void setResource(Resource resource) { this.resource = resource; }
+    
+    public double getSkillMatch() { return skillMatch; }
+    public void setSkillMatch(double skillMatch) { this.skillMatch = skillMatch; }
+    
+    public String getStatus() { return status; }
+    public void setStatus(String status) { this.status = status; }
+}
+
+
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" 
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+         https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.1.5</version>
+        <relativePath/>
+    </parent>
+    
+    <groupId>com.example</groupId>
+    <artifactId>jira-resource-allocation</artifactId>
+    <version>1.0.0</version>
+    <name>JIRA Resource Allocation API</name>
+    <description>Resource allocation system for JIRA tasks</description>
+
+-----
+# Spring Boot Application Configuration
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+
+spring:
+  application:
+    name: jira-resource-allocation
+  
+  # Database configuration (H2 for development)
+  datasource:
+    url: jdbc:h2:mem:testdb
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: 
+  
+  # JPA/Hibernate configuration
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+  
+  # H2 Console (for development)
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+  
+  # Jackson configuration for JSON
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    deserialization:
+      fail-on-unknown-properties: false
+
+# Logging configuration
+logging:
+  level:
+    com.example: DEBUG
+    org.springframework.web: INFO
+    org.hibernate.SQL: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+# Actuator endpoints
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+# Custom application properties
+app:
+  jira:
+    mock-enabled: true
+    base-url: https://mock-jira.example.com
+    max-tasks: 100
+  
+  calendar:
+    mock-enabled: true
+    base-url: https://mock-calendar.example.com
+  
+  team-skills:
+    mock-enabled: true
+    base-url: https://mock-skills.example.com
+
+# CORS configuration
+cors:
+  allowed-origins: 
+    - http://localhost:3000
+    - http://localhost:3001
+  allowed-methods:
+    - GET
+    - POST
+    - PUT
+    - DELETE
+    - OPTIONS
+  allowed-headers:
+    - Content-Type
+    - Authorization
+    - X-Requested-With
+----------
+# JIRA Resource Allocation System
+
+A comprehensive web application that automatically allocates JIRA tasks to team resources based on skill sets, availability, and task priorities.
+
+## 🚀 Features
+
+- **Date Range Selection**: Pick sprint start and end dates through an intuitive UI
+- **Mock Service Integration**: Simulates JIRA, Calendar, and Team Skills services
+- **Intelligent Resource Allocation**: Automatically assigns tasks based on:
+  - Task priority (High, Medium, Low)
+  - Required skills vs team member skills
+  - Resource availability and capacity
+  - Story points (effort estimation)
+- **Real-time Results**: Displays allocation results with success rates and assignment details
+- **Responsive UI**: Modern React interface with Tailwind CSS styling
+
+## 🏗️ Architecture
+
+### Backend (Java Spring Boot)
+- **REST API**: Exposes resource allocation endpoints
+- **Service Layer**: Handles business logic for task allocation
+- **Mock Services**: Simulates external JIRA, Calendar, and Skills APIs
+- **Algorithm**: Greedy allocation algorithm prioritizing high-priority tasks and skill matches
+
+### Frontend (React)
+- **Component-based**: Modular React components with hooks
+- **State Management**: React useState for application state
+- **UI Components**: Lucide React icons, responsive tables, and forms
+- **Styling**: Tailwind CSS for modern, responsive design
+
+## 📋 Prerequisites
+
+### Backend Requirements
+- Java 17 or higher
+- Maven 3.6 or higher
+- IDE (IntelliJ IDEA, Eclipse, or VS Code)
+
+### Frontend Requirements
+- Node.js 16 or higher
+- npm or yarn package manager
+
+## 🛠️ Setup Instructions
+
+### Backend Setup
+
+1. **Clone or create the project structure:**
+```bash
+mkdir jira-resource-allocation
+cd jira-resource-allocation
+mkdir -p src/main/java/com/example/jiraresourceallocation
+mkdir -p src/main/resources
+mkdir -p src/test/java/com/example/jiraresourceallocation
+```
+
+2. **Add the Maven configuration:**
+   - Copy the provided `pom.xml` to the project root
+   - Copy the `application.yml` to `src/main/resources/`
+
+3. **Add the Java source files:**
+   - Copy all Java classes to `src/main/java/com/example/jiraresourceallocation/`
+   - Copy test classes to `src/test/java/com/example/jiraresourceallocation/`
+
+4. **Build and run the backend:**
+```bash
+mvn clean install
+mvn spring-boot:run
+```
+
+The backend will start on `http://localhost:8080`
+
+### Frontend Setup
+
+1. **Create React application:**
+```bash
+npx create-react-app jira-frontend
+cd jira-frontend
+```
+
+2. **Install dependencies:**
+```bash
+npm install lucide-react
+npm install -D tailwindcss postcss autoprefixer
+npx tailwindcss init -p
+```
+
+3. **Configure Tailwind CSS:**
+Update `tailwind.config.js`:
+```javascript
+module.exports = {
+  content: [
+    "./src/**/*.{js,jsx,ts,tsx}",
+  ],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+}
+```
+
+4. **Add Tailwind to CSS:**
+Replace content in `src/index.css`:
+```css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+```
+
+5. **Replace App.js with the provided React component**
+
+6. **Start the development server:**
+```bash
+npm start
+```
+
+The frontend will start on `http://localhost:3000`
+
+## 🚀 Usage
+
+1. **Start both servers:**
+   - Backend: `mvn spring-boot:run` (port 8080)
+   - Frontend: `npm start` (port 3000)
+
+2. **Access the application:**
+   - Open `http://localhost:3000` in your browser
+
+3. **Use the system:**
+   - Select sprint start and end dates
+   - Click "Allocate Resources"
+   - View the allocation results with task assignments
+
+## 🔧 API Endpoints
+
+### POST /api/allocate-resources
+Allocates tasks to resources based on the provided date range.
+
+**Request Body:**
+```json
+{
+  "startDate": "2024-01-01",
+  "endDate": "2024-01-15"
+}
+```
+
+**Response:**
+```json
+{
+  "assignments": [
+    {
+      "task": {
+        "id": "JIRA-1001",
+        "title": "Implement feature 1",
+        "priority": "High",
+        "skillsNeeded": ["java", "oracle"],
+        "storyPoints": 5,
+        "description": "Task description"
+      },
+      "resource": {
+        "id": "dev-001",
+        "name": "Alice Johnson",
+        "availability": 0.8,
+        "availableDays": 8
+      },
+      "skillMatch": 1.0,
+      "status": "assigned"
+    }
+  ],
+  "message": "Success"
+}
+```
+
+## 🧪 Testing
+
+### Backend Tests
+```bash
+mvn test
+```
+
+### Frontend Tests
+```bash
+npm test
+```
+
+## 🎯 Allocation Algorithm
+
+The system uses a greedy allocation algorithm:
+
+1. **Task Prioritization**: Sort tasks by priority (High → Medium → Low)
+2. **Skill Matching**: Calculate skill match ratio for each resource
+3. **Capacity Check**: Verify resource has sufficient available days
+4. **Assignment**: Assign task to resource with highest skill match and capacity
+5. **Capacity Update**: Reduce resource's available days by task story points
+
+## 📊 Mock Data
+
+### JIRA Tasks (100 tasks)
+- IDs: JIRA-1000 to JIRA-1099
+- Priorities: High (33%), Medium (33%), Low (34%)
+- Skills: java, oracle, react, python, nodejs, angular, docker, kubernetes
+- Story Points: 1-8 days
+
+### Resources (8 developers)
+- Alice Johnson (80% availability) - java, oracle, docker
+- Bob Smith (100% availability) - react, nodejs, javascript
+- Carol Davis (60% availability) - python, docker, kubernetes
+- David Wilson (90% availability) - java, react, nodejs
+- Emma Brown (70% availability) - oracle, python, java
+- Frank Miller (80% availability) - angular, nodejs, docker
+- Grace Lee (100% availability) - react, javascript, kubernetes
+- Henry Chen (50% availability) - java, python, oracle
+
+## 🔮 Future Enhancements
+
+- **Real API Integration**: Connect to actual JIRA, Calendar, and HR systems
+- **Database Persistence**: Store allocation history and results
+- **Advanced Algorithms**: Machine learning-based allocation optimization
+- **User Management**: Role-based access and team management
+- **Reporting**: Detailed analytics and allocation reports
+- **Notifications**: Email/Slack notifications for assignments
+- **Drag & Drop**: Manual adjustment of task assignments
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests for new functionality
+5. Submit a pull request
+
+## 📝 License
+
+This project is licensed under the MIT License.
+
+## 📞 Support
+
+For questions or issues, please create an issue in the project repository.
