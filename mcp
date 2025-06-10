@@ -1,0 +1,1193 @@
+// MCP JIRA Server Implementation
+
+// First, let's define the core MCP message types
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
+import java.io.*;
+import java.net.*;
+import java.util.*;
+import java.util.concurrent.*;
+
+// Base MCP Message classes
+abstract class MCPMessage {
+    @JsonProperty("jsonrpc")
+    public String jsonrpc = "2.0";
+}
+
+class MCPRequest extends MCPMessage {
+    public String id;
+    public String method;
+    public JsonNode params;
+    
+    public MCPRequest() {}
+    
+    public MCPRequest(String id, String method, JsonNode params) {
+        this.id = id;
+        this.method = method;
+        this.params = params;
+    }
+}
+
+class MCPResponse extends MCPMessage {
+    public String id;
+    public JsonNode result;
+    public MCPError error;
+    
+    public MCPResponse() {}
+    
+    public MCPResponse(String id, JsonNode result) {
+        this.id = id;
+        this.result = result;
+    }
+    
+    public MCPResponse(String id, MCPError error) {
+        this.id = id;
+        this.error = error;
+    }
+}
+
+class MCPError {
+    public int code;
+    public String message;
+    public JsonNode data;
+    
+    public MCPError(int code, String message) {
+        this.code = code;
+        this.message = message;
+    }
+}
+
+// Tool definitions for JIRA operations
+class MCPTool {
+    public String name;
+    public String description;
+    public JsonNode inputSchema;
+    
+    public MCPTool(String name, String description, JsonNode inputSchema) {
+        this.name = name;
+        this.description = description;
+        this.inputSchema = inputSchema;
+    }
+}
+
+// JIRA-specific classes
+class JiraIssue {
+    public String key;
+    public String summary;
+    public String description;
+    public String status;
+    public String assignee;
+    public String reporter;
+    public String priority;
+    public Date created;
+    public Date updated;
+    
+    // Constructor
+    public JiraIssue(String key, String summary, String description, String status) {
+        this.key = key;
+        this.summary = summary;
+        this.description = description;
+        this.status = status;
+        this.created = new Date();
+        this.updated = new Date();
+    }
+}
+
+class JiraService {
+    private String baseUrl;
+    private String username;
+    private String apiToken;
+    private Map<String, JiraIssue> mockIssues;
+    
+    public JiraService(String baseUrl, String username, String apiToken) {
+        this.baseUrl = baseUrl;
+        this.username = username;
+        this.apiToken = apiToken;
+        this.mockIssues = new HashMap<>();
+        initializeMockData();
+    }
+    
+    private void initializeMockData() {
+        // Mock data for demonstration
+        mockIssues.put("PROJ-1", new JiraIssue("PROJ-1", "Sample Bug", "This is a sample bug report", "Open"));
+        mockIssues.put("PROJ-2", new JiraIssue("PROJ-2", "Feature Request", "New feature implementation", "In Progress"));
+        mockIssues.put("PROJ-3", new JiraIssue("PROJ-3", "Documentation Update", "Update API documentation", "Done"));
+    }
+    
+    public JiraIssue getIssue(String issueKey) {
+        return mockIssues.get(issueKey);
+    }
+    
+    public List<JiraIssue> searchIssues(String jql) {
+        // Simple mock search - in real implementation, this would call JIRA REST API
+        List<JiraIssue> results = new ArrayList<>();
+        for (JiraIssue issue : mockIssues.values()) {
+            if (jql.contains(issue.status) || jql.contains("*")) {
+                results.add(issue);
+            }
+        }
+        return results;
+    }
+    
+    public JiraIssue createIssue(String projectKey, String summary, String description, String issueType) {
+        String newKey = projectKey + "-" + (mockIssues.size() + 1);
+        JiraIssue newIssue = new JiraIssue(newKey, summary, description, "Open");
+        mockIssues.put(newKey, newIssue);
+        return newIssue;
+    }
+    
+    public boolean updateIssue(String issueKey, Map<String, Object> updates) {
+        JiraIssue issue = mockIssues.get(issueKey);
+        if (issue == null) return false;
+        
+        if (updates.containsKey("summary")) {
+            issue.summary = (String) updates.get("summary");
+        }
+        if (updates.containsKey("description")) {
+            issue.description = (String) updates.get("description");
+        }
+        if (updates.containsKey("status")) {
+            issue.status = (String) updates.get("status");
+        }
+        issue.updated = new Date();
+        return true;
+    }
+}
+
+// Main MCP JIRA Server
+public class MCPJiraServer {
+    private static final int PORT = 8080;
+    private ObjectMapper objectMapper;
+    private JiraService jiraService;
+    private Map<String, MCPTool> tools;
+    
+    public MCPJiraServer(String jiraUrl, String username, String apiToken) {
+        this.objectMapper = new ObjectMapper();
+        this.jiraService = new JiraService(jiraUrl, username, apiToken);
+        this.tools = new HashMap<>();
+        initializeTools();
+    }
+    
+    private void initializeTools() {
+        // Define available tools
+        try {
+            // Get Issue Tool
+            JsonNode getIssueSchema = objectMapper.readTree("""
+                {
+                    "type": "object",
+                    "properties": {
+                        "issueKey": {
+                            "type": "string",
+                            "description": "The JIRA issue key (e.g., PROJ-123)"
+                        }
+                    },
+                    "required": ["issueKey"]
+                }
+                """);
+            tools.put("get_jira_issue", new MCPTool("get_jira_issue", "Get details of a JIRA issue", getIssueSchema));
+            
+            // Search Issues Tool
+            JsonNode searchSchema = objectMapper.readTree("""
+                {
+                    "type": "object",
+                    "properties": {
+                        "jql": {
+                            "type": "string",
+                            "description": "JIRA Query Language string to search issues"
+                        }
+                    },
+                    "required": ["jql"]
+                }
+                """);
+            tools.put("search_jira_issues", new MCPTool("search_jira_issues", "Search JIRA issues using JQL", searchSchema));
+            
+            // Create Issue Tool
+            JsonNode createSchema = objectMapper.readTree("""
+                {
+                    "type": "object",
+                    "properties": {
+                        "projectKey": {
+                            "type": "string",
+                            "description": "The project key"
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "Issue summary"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Issue description"
+                        },
+                        "issueType": {
+                            "type": "string",
+                            "description": "Type of issue (Bug, Task, Story, etc.)"
+                        }
+                    },
+                    "required": ["projectKey", "summary", "issueType"]
+                }
+                """);
+            tools.put("create_jira_issue", new MCPTool("create_jira_issue", "Create a new JIRA issue", createSchema));
+            
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+    
+    public void start() {
+        try (ServerSocket serverSocket = new ServerSocket(PORT)) {
+            System.out.println("MCP JIRA Server started on port " + PORT);
+            
+            while (true) {
+                Socket clientSocket = serverSocket.accept();
+                new Thread(() -> handleClient(clientSocket)).start();
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+    
+    private void handleClient(Socket clientSocket) {
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+             PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true)) {
+            
+            String inputLine;
+            while ((inputLine = in.readLine()) != null) {
+                MCPRequest request = objectMapper.readValue(inputLine, MCPRequest.class);
+                MCPResponse response = handleRequest(request);
+                out.println(objectMapper.writeValueAsString(response));
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+    
+    private MCPResponse handleRequest(MCPRequest request) {
+        try {
+            switch (request.method) {
+                case "tools/list":
+                    return handleToolsList(request);
+                case "tools/call":
+                    return handleToolCall(request);
+                case "initialize":
+                    return handleInitialize(request);
+                default:
+                    return new MCPResponse(request.id, new MCPError(-32601, "Method not found"));
+            }
+        } catch (Exception e) {
+            return new MCPResponse(request.id, new MCPError(-32603, "Internal error: " + e.getMessage()));
+        }
+    }
+    
+    private MCPResponse handleInitialize(MCPRequest request) {
+        try {
+            JsonNode result = objectMapper.readTree("""
+                {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {
+                        "tools": {}
+                    },
+                    "serverInfo": {
+                        "name": "jira-mcp-server",
+                        "version": "1.0.0"
+                    }
+                }
+                """);
+            return new MCPResponse(request.id, result);
+        } catch (Exception e) {
+            return new MCPResponse(request.id, new MCPError(-32603, "Initialize error"));
+        }
+    }
+    
+    private MCPResponse handleToolsList(MCPRequest request) {
+        try {
+            List<MCPTool> toolsList = new ArrayList<>(tools.values());
+            JsonNode result = objectMapper.valueToTree(Map.of("tools", toolsList));
+            return new MCPResponse(request.id, result);
+        } catch (Exception e) {
+            return new MCPResponse(request.id, new MCPError(-32603, "Tools list error"));
+        }
+    }
+    
+    private MCPResponse handleToolCall(MCPRequest request) {
+        try {
+            JsonNode params = request.params;
+            String toolName = params.get("name").asText();
+            JsonNode arguments = params.get("arguments");
+            
+            switch (toolName) {
+                case "get_jira_issue":
+                    return handleGetIssue(request.id, arguments);
+                case "search_jira_issues":
+                    return handleSearchIssues(request.id, arguments);
+                case "create_jira_issue":
+                    return handleCreateIssue(request.id, arguments);
+                default:
+                    return new MCPResponse(request.id, new MCPError(-32602, "Unknown tool: " + toolName));
+            }
+        } catch (Exception e) {
+            return new MCPResponse(request.id, new MCPError(-32603, "Tool call error: " + e.getMessage()));
+        }
+    }
+    
+    private MCPResponse handleGetIssue(String requestId, JsonNode arguments) {
+        try {
+            String issueKey = arguments.get("issueKey").asText();
+            JiraIssue issue = jiraService.getIssue(issueKey);
+            
+            if (issue == null) {
+                JsonNode result = objectMapper.valueToTree(Map.of(
+                    "content", List.of(Map.of(
+                        "type", "text",
+                        "text", "Issue not found: " + issueKey
+                    ))
+                ));
+                return new MCPResponse(requestId, result);
+            }
+            
+            String issueText = String.format("""
+                Issue: %s
+                Summary: %s
+                Description: %s
+                Status: %s
+                Assignee: %s
+                Reporter: %s
+                Priority: %s
+                Created: %s
+                Updated: %s
+                """, 
+                issue.key, issue.summary, issue.description, issue.status,
+                issue.assignee != null ? issue.assignee : "Unassigned",
+                issue.reporter != null ? issue.reporter : "Unknown",
+                issue.priority != null ? issue.priority : "Medium",
+                issue.created, issue.updated);
+            
+            JsonNode result = objectMapper.valueToTree(Map.of(
+                "content", List.of(Map.of(
+                    "type", "text",
+                    "text", issueText
+                ))
+            ));
+            return new MCPResponse(requestId, result);
+        } catch (Exception e) {
+            return new MCPResponse(requestId, new MCPError(-32603, "Get issue error: " + e.getMessage()));
+        }
+    }
+    
+    private MCPResponse handleSearchIssues(String requestId, JsonNode arguments) {
+        try {
+            String jql = arguments.get("jql").asText();
+            List<JiraIssue> issues = jiraService.searchIssues(jql);
+            
+            StringBuilder resultText = new StringBuilder();
+            resultText.append("Search Results for JQL: ").append(jql).append("\n\n");
+            
+            if (issues.isEmpty()) {
+                resultText.append("No issues found.");
+            } else {
+                for (JiraIssue issue : issues) {
+                    resultText.append(String.format("%s - %s [%s]\n", 
+                        issue.key, issue.summary, issue.status));
+                }
+            }
+            
+            JsonNode result = objectMapper.valueToTree(Map.of(
+                "content", List.of(Map.of(
+                    "type", "text",
+                    "text", resultText.toString()
+                ))
+            ));
+            return new MCPResponse(requestId, result);
+        } catch (Exception e) {
+            return new MCPResponse(requestId, new MCPError(-32603, "Search error: " + e.getMessage()));
+        }
+    }
+    
+    private MCPResponse handleCreateIssue(String requestId, JsonNode arguments) {
+        try {
+            String projectKey = arguments.get("projectKey").asText();
+            String summary = arguments.get("summary").asText();
+            String description = arguments.has("description") ? arguments.get("description").asText() : "";
+            String issueType = arguments.get("issueType").asText();
+            
+            JiraIssue newIssue = jiraService.createIssue(projectKey, summary, description, issueType);
+            
+            String resultText = String.format("Created issue: %s - %s", newIssue.key, newIssue.summary);
+            
+            JsonNode result = objectMapper.valueToTree(Map.of(
+                "content", List.of(Map.of(
+                    "type", "text",
+                    "text", resultText
+                ))
+            ));
+            return new MCPResponse(requestId, result);
+        } catch (Exception e) {
+            return new MCPResponse(requestId, new MCPError(-32603, "Create issue error: " + e.getMessage()));
+        }
+    }
+    
+    public static void main(String[] args) {
+        // Example usage
+        MCPJiraServer server = new MCPJiraServer(
+            "https://your-domain.atlassian.net",
+            "your-email@example.com",
+            "your-api-token"
+        );
+        server.start();
+    }
+}
+
+-------------
+// MCP JIRA Client Implementation
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.*;
+import java.net.*;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class MCPJiraClient {
+    private String serverHost;
+    private int serverPort;
+    private ObjectMapper objectMapper;
+    private AtomicInteger requestIdCounter;
+    private Socket socket;
+    private PrintWriter out;
+    private BufferedReader in;
+    private boolean connected;
+    
+    public MCPJiraClient(String serverHost, int serverPort) {
+        this.serverHost = serverHost;
+        this.serverPort = serverPort;
+        this.objectMapper = new ObjectMapper();
+        this.requestIdCounter = new AtomicInteger(1);
+        this.connected = false;
+    }
+    
+    public boolean connect() {
+        try {
+            socket = new Socket(serverHost, serverPort);
+            out = new PrintWriter(socket.getOutputStream(), true);
+            in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            connected = true;
+            
+            // Initialize the connection
+            return initialize();
+        } catch (IOException e) {
+            System.err.println("Failed to connect to MCP server: " + e.getMessage());
+            return false;
+        }
+    }
+    
+    private boolean initialize() {
+        try {
+            JsonNode initParams = objectMapper.readTree("""
+                {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {
+                        "roots": {
+                            "listChanged": true
+                        }
+                    },
+                    "clientInfo": {
+                        "name": "jira-mcp-client",
+                        "version": "1.0.0"
+                    }
+                }
+                """);
+            
+            MCPResponse response = sendRequest("initialize", initParams);
+            return response != null && response.error == null;
+        } catch (Exception e) {
+            System.err.println("Failed to initialize: " + e.getMessage());
+            return false;
+        }
+    }
+    
+    public void disconnect() {
+        try {
+            if (socket != null && !socket.isClosed()) {
+                socket.close();
+            }
+            connected = false;
+        } catch (IOException e) {
+            System.err.println("Error disconnecting: " + e.getMessage());
+        }
+    }
+    
+    private MCPResponse sendRequest(String method, JsonNode params) {
+        if (!connected) {
+            System.err.println("Not connected to server");
+            return null;
+        }
+        
+        try {
+            String requestId = String.valueOf(requestIdCounter.getAndIncrement());
+            MCPRequest request = new MCPRequest(requestId, method, params);
+            
+            String requestJson = objectMapper.writeValueAsString(request);
+            out.println(requestJson);
+            
+            String responseJson = in.readLine();
+            if (responseJson == null) {
+                System.err.println("Server closed connection");
+                connected = false;
+                return null;
+            }
+            
+            return objectMapper.readValue(responseJson, MCPResponse.class);
+        } catch (Exception e) {
+            System.err.println("Error sending request: " + e.getMessage());
+            return null;
+        }
+    }
+    
+    public List<MCPTool> listTools() {
+        try {
+            MCPResponse response = sendRequest("tools/list", objectMapper.createObjectNode());
+            if (response != null && response.error == null) {
+                JsonNode toolsNode = response.result.get("tools");
+                List<MCPTool> tools = new ArrayList<>();
+                
+                if (toolsNode.isArray()) {
+                    for (JsonNode toolNode : toolsNode) {
+                        MCPTool tool = objectMapper.treeToValue(toolNode, MCPTool.class);
+                        tools.add(tool);
+                    }
+                }
+                return tools;
+            }
+        } catch (Exception e) {
+            System.err.println("Error listing tools: " + e.getMessage());
+        }
+        return new ArrayList<>();
+    }
+    
+    public String callTool(String toolName, Map<String, Object> arguments) {
+        try {
+            JsonNode toolCallParams = objectMapper.createObjectNode()
+                .put("name", toolName)
+                .set("arguments", objectMapper.valueToTree(arguments));
+            
+            MCPResponse response = sendRequest("tools/call", toolCallParams);
+            if (response != null && response.error == null) {
+                JsonNode content = response.result.get("content");
+                if (content.isArray() && content.size() > 0) {
+                    JsonNode firstContent = content.get(0);
+                    if (firstContent.has("text")) {
+                        return firstContent.get("text").asText();
+                    }
+                }
+            } else if (response != null && response.error != null) {
+                return "Error: " + response.error.message;
+            }
+        } catch (Exception e) {
+            return "Error calling tool: " + e.getMessage();
+        }
+        return "No response received";
+    }
+    
+    // Convenience methods for JIRA operations
+    public String getJiraIssue(String issueKey) {
+        Map<String, Object> args = Map.of("issueKey", issueKey);
+        return callTool("get_jira_issue", args);
+    }
+    
+    public String searchJiraIssues(String jql) {
+        Map<String, Object> args = Map.of("jql", jql);
+        return callTool("search_jira_issues", args);
+    }
+    
+    public String createJiraIssue(String projectKey, String summary, String description, String issueType) {
+        Map<String, Object> args = new HashMap<>();
+        args.put("projectKey", projectKey);
+        args.put("summary", summary);
+        args.put("issueType", issueType);
+        if (description != null && !description.isEmpty()) {
+            args.put("description", description);
+        }
+        return callTool("create_jira_issue", args);
+    }
+    
+    // Interactive CLI methods
+    public void startInteractiveSession() {
+        Scanner scanner = new Scanner(System.in);
+        System.out.println("=== MCP JIRA Client Interactive Session ===");
+        System.out.println("Type 'help' for available commands or 'quit' to exit");
+        
+        while (true) {
+            System.out.print("\nmcp-jira> ");
+            String input = scanner.nextLine().trim();
+            
+            if (input.equalsIgnoreCase("quit") || input.equalsIgnoreCase("exit")) {
+                break;
+            }
+            
+            handleCommand(input);
+        }
+        
+        scanner.close();
+    }
+    
+    private void handleCommand(String input) {
+        String[] parts = input.split("\\s+");
+        String command = parts[0].toLowerCase();
+        
+        try {
+            switch (command) {
+                case "help":
+                    showHelp();
+                    break;
+                case "list-tools":
+                    listAndDisplayTools();
+                    break;
+                case "get-issue":
+                    if (parts.length < 2) {
+                        System.out.println("Usage: get-issue <issue-key>");
+                        return;
+                    }
+                    System.out.println(getJiraIssue(parts[1]));
+                    break;
+                case "search":
+                    if (parts.length < 2) {
+                        System.out.println("Usage: search <jql-query>");
+                        return;
+                    }
+                    String jql = String.join(" ", Arrays.copyOfRange(parts, 1, parts.length));
+                    System.out.println(searchJiraIssues(jql));
+                    break;
+                case "create-issue":
+                    handleCreateIssueInteractive();
+                    break;
+                default:
+                    System.out.println("Unknown command: " + command + ". Type 'help' for available commands.");
+            }
+        } catch (Exception e) {
+            System.out.println("Error executing command: " + e.getMessage());
+        }
+    }
+    
+    private void showHelp() {
+        System.out.println("\nAvailable commands:");
+        System.out.println("  help                    - Show this help message");
+        System.out.println("  list-tools              - List available MCP tools");
+        System.out.println("  get-issue <key>         - Get details of a JIRA issue");
+        System.out.println("  search <jql>            - Search JIRA issues using JQL");
+        System.out.println("  create-issue            - Create a new JIRA issue (interactive)");
+        System.out.println("  quit/exit               - Exit the client");
+        System.out.println("\nExamples:");
+        System.out.println("  get-issue PROJ-123");
+        System.out.println("  search status = Open");
+        System.out.println("  search project = PROJ AND assignee = currentUser()");
+    }
+    
+    private void listAndDisplayTools() {
+        List<MCPTool> tools = listTools();
+        if (tools.isEmpty()) {
+            System.out.println("No tools available");
+            return;
+        }
+        
+        System.out.println("\nAvailable MCP Tools:");
+        for (MCPTool tool : tools) {
+            System.out.println("  " + tool.name + " - " + tool.description);
+        }
+    }
+    
+    private void handleCreateIssueInteractive() {
+        Scanner scanner = new Scanner(System.in);
+        
+        System.out.print("Project Key: ");
+        String projectKey = scanner.nextLine().trim();
+        
+        System.out.print("Summary: ");
+        String summary = scanner.nextLine().trim();
+        
+        System.out.print("Description (optional): ");
+        String description = scanner.nextLine().trim();
+        
+        System.out.print("Issue Type (Bug/Task/Story/etc.): ");
+        String issueType = scanner.nextLine().trim();
+        
+        if (projectKey.isEmpty() || summary.isEmpty() || issueType.isEmpty()) {
+            System.out.println("Project Key, Summary, and Issue Type are required!");
+            return;
+        }
+        
+        String result = createJiraIssue(projectKey, summary, description, issueType);
+        System.out.println(result);
+    }
+    
+    // Example usage and testing methods
+    public void runExamples() {
+        System.out.println("=== MCP JIRA Client Examples ===\n");
+        
+        // List available tools
+        System.out.println("1. Listing available tools:");
+        List<MCPTool> tools = listTools();
+        for (MCPTool tool : tools) {
+            System.out.println("   - " + tool.name + ": " + tool.description);
+        }
+        
+        // Get a specific issue
+        System.out.println("\n2. Getting issue PROJ-1:");
+        String issueDetails = getJiraIssue("PROJ-1");
+        System.out.println(issueDetails);
+        
+        // Search for issues
+        System.out.println("\n3. Searching for open issues:");
+        String searchResults = searchJiraIssues("status = Open");
+        System.out.println(searchResults);
+        
+        // Create a new issue
+        System.out.println("\n4. Creating a new issue:");
+        String createResult = createJiraIssue("PROJ", "Test Issue from MCP Client", 
+            "This is a test issue created via MCP", "Bug");
+        System.out.println(createResult);
+        
+        // Search all issues
+        System.out.println("\n5. Searching all issues:");
+        String allIssues = searchJiraIssues("*");
+        System.out.println(allIssues);
+    }
+    
+    public static void main(String[] args) {
+        MCPJiraClient client = new MCPJiraClient("localhost", 8080);
+        
+        System.out.println("Connecting to MCP JIRA Server...");
+        if (!client.connect()) {
+            System.err.println("Failed to connect to server. Make sure the MCP JIRA Server is running.");
+            return;
+        }
+        
+        System.out.println("Connected successfully!\n");
+        
+        // Check command line arguments
+        if (args.length > 0 && args[0].equals("--examples")) {
+            client.runExamples();
+        } else if (args.length > 0 && args[0].equals("--interactive")) {
+            client.startInteractiveSession();
+        } else {
+            // Default: run examples then start interactive session
+            client.runExamples();
+            System.out.println("\n" + "=".repeat(50));
+            client.startInteractiveSession();
+        }
+        
+        client.disconnect();
+        System.out.println("Disconnected from server.");
+    }
+}
+--------
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    
+    <groupId>com.example</groupId>
+    <artifactId>mcp-jira-server</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+    
+    <name>MCP JIRA Server and Client</name>
+    <description>Model Context Protocol implementation for JIRA integration</description>
+    
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <jackson.version>2.15.2</jackson.version>
+        <junit.version>5.9.3</junit.version>
+    </properties>
+    
+    <dependencies>
+        <!-- Jackson for JSON processing -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.
+-------
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    
+    <groupId>com.example</groupId>
+    <artifactId>mcp-jira-server</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+    
+    <name>MCP JIRA Server and Client</name>
+    <description>Model Context Protocol implementation for JIRA integration</description>
+    
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <jackson.version>2.15.2</jackson.version>
+        <junit.version>5.9.3</junit.version>
+    </properties>
+    
+    <dependencies>
+        <!-- Jackson for JSON processing -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+        
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+        
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+        
+        <!-- HTTP Client for JIRA REST API calls -->
+        <dependency>
+            <groupId>org.apache.httpcomponents</groupId>
+            <artifactId>httpclient</artifactId>
+            <version>4.5.14</version>
+        </dependency>
+        
+        <!-- Logging -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>2.0.7</version>
+        </dependency>
+        
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>1.4.8</version>
+        </dependency>
+        
+        <!-- Testing -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>5.3.1</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+    
+    <build>
+        <plugins>
+            <!-- Maven Compiler Plugin -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+                <configuration>
+                    <source>11</source>
+                    <target>11</target>
+                </configuration>
+            </plugin>
+            
+            <!-- Maven Surefire Plugin for running tests -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.1.2</version>
+            </plugin>
+            
+            <!-- Exec Maven Plugin for running main classes -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <configuration>
+                    <mainClass>MCPJiraServer</mainClass>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>run-server</id>
+                        <goals>
+                            <goal>java</goal>
+                        </goals>
+                        <configuration>
+                            <mainClass>MCPJiraServer</mainClass>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>run-client</id>
+                        <goals>
+                            <goal>java</goal>
+                        </goals>
+                        <configuration>
+                            <mainClass>MCPJiraClient</mainClass>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            
+            <!-- Maven Shade Plugin for creating fat JAR -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.4.1</version>
+                <executions>
+                    <execution>
+                        <id>server-jar</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>mcp-jira-server</finalName>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>MCPJiraServer</mainClass>
+                                </transformer>
+                            </transformers>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+    
+    <profiles>
+        <!-- Profile for running the client -->
+        <profile>
+            <id>client</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <configuration>
+                            <mainClass>MCPJiraClient</mainClass>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>
+
+--------
+MCP JIRA Server and Client
+This project implements a Model Context Protocol (MCP) server and client for JIRA integration, allowing AI models and applications to interact with JIRA through standardized MCP tools.
+
+Features
+MCP Server
+Protocol Compliance: Implements MCP 2024-11-05 specification
+JIRA Integration: Connect to JIRA Cloud or Server instances
+Available Tools:
+get_jira_issue: Retrieve detailed information about a specific JIRA issue
+search_jira_issues: Search issues using JIRA Query Language (JQL)
+create_jira_issue: Create new JIRA issues
+MCP Client
+Interactive CLI: Command-line interface for testing and manual operations
+Programmatic API: Easy-to-use methods for JIRA operations
+Example Usage: Built-in examples demonstrating all functionality
+Prerequisites
+Java 11 or higher
+Maven 3.6 or higher
+JIRA instance (Cloud or Server) with API access
+Installation
+Clone or download the project files
+Ensure you have the following files in your project directory:
+MCPJiraServer.java
+MCPJiraClient.java
+pom.xml
+Build the project:
+bash
+mvn clean compile
+Configuration
+JIRA Connection Setup
+Before running the server, you'll need JIRA credentials:
+
+For JIRA Cloud: Create an API token
+Go to https://id.atlassian.com/manage-profile/security/api-tokens
+Create a new token
+Use your email as username and the token as password
+For JIRA Server: Use your regular username and password
+Update the server configuration in MCPJiraServer.java main method:
+java
+MCPJiraServer server = new MCPJiraServer(
+    "https://your-domain.atlassian.net",  // Your JIRA URL
+    "your-email@example.com",             // Your username/email
+    "your-api-token"                      // Your API token/password
+);
+Usage
+Running the Server
+Start the MCP server:
+bash
+mvn exec:java -Dexec.mainClass="MCPJiraServer"
+Or using the Maven profile:
+bash
+mvn exec:java
+The server will start on port 8080 by default.
+Build and run as JAR:
+bash
+mvn package
+java -jar target/mcp-jira-server.jar
+Running the Client
+Interactive mode (recommended for testing):
+bash
+mvn exec:java -Dexec.mainClass="MCPJiraClient" -Dexec.args="--interactive"
+Examples mode:
+bash
+mvn exec:java -Dexec.mainClass="MCPJiraClient" -Dexec.args="--examples"
+Using Maven profile:
+bash
+mvn exec:java -Pclient
+Client Commands
+Once in interactive mode, you can use these commands:
+
+mcp-jira> help                          # Show available commands
+mcp-jira> list-tools                    # List available MCP tools
+mcp-jira> get-issue PROJ-123            # Get details of issue PROJ-123
+mcp-jira> search status = Open          # Search for open issues
+mcp-jira> search project = PROJ         # Search issues in project PROJ
+mcp-jira> create-issue                  # Create a new issue (interactive)
+mcp-jira> quit                          # Exit the client
+Example JQL Queries
+bash
+# Search by status
+search status = "In Progress"
+
+# Search by assignee
+search assignee = currentUser()
+
+# Search by project and status
+search project = MYPROJECT AND status != Done
+
+# Search by created date
+search created >= -7d
+
+# Search by priority
+search priority = High
+
+# Complex query
+search project = MYPROJECT AND status = Open AND assignee = currentUser()
+API Usage
+Programmatic Client Usage
+java
+// Create and connect client
+MCPJiraClient client = new MCPJiraClient("localhost", 8080);
+if (client.connect()) {
+    // Get issue details
+    String issueInfo = client.getJiraIssue("PROJ-123");
+    System.out.println(issueInfo);
+    
+    // Search issues
+    String searchResults = client.searchJiraIssues("status = Open");
+    System.out.println(searchResults);
+    
+    // Create new issue
+    String result = client.createJiraIssue(
+        "PROJ", 
+        "Bug in login functionality", 
+        "Users cannot log in with special characters in password",
+        "Bug"
+    );
+    System.out.println(result);
+    
+    client.disconnect();
+}
+Server Customization
+To extend the server with additional tools:
+
+Add new methods to JiraService class
+Define new MCPTool objects in initializeTools()
+Add new case handlers in handleToolCall()
+Example:
+
+java
+// Add to initializeTools()
+JsonNode updateSchema = objectMapper.readTree("""
+    {
+        "type": "object",
+        "properties": {
+            "issueKey": {"type": "string"},
+            "summary": {"type": "string"},
+            "description": {"type": "string"}
+        },
+        "required": ["issueKey"]
+    }
+    """);
+tools.put("update_jira_issue", new MCPTool("update_jira_issue", "Update a JIRA issue", updateSchema));
+Testing
+The server includes mock JIRA data for testing without a real JIRA instance:
+
+PROJ-1: Sample Bug (Open)
+PROJ-2: Feature Request (In Progress)
+PROJ-3: Documentation Update (Done)
+To test with real JIRA data, update the JiraService class to make actual REST API calls.
+
+Troubleshooting
+Common Issues
+Connection Refused: Ensure the server is running before starting the client
+Authentication Errors: Verify your JIRA credentials and API token
+Port Already in Use: Change the port in both server and client, or stop other services using port 8080
+Debugging
+Enable verbose logging by adding this to your Java command:
+
+bash
+-Dorg.slf4j.simpleLogger.defaultLogLevel=DEBUG
+JIRA API Limitations
+API tokens are required for JIRA Cloud
+Some operations may require specific JIRA permissions
+Rate limiting may apply for high-volume operations
+Architecture
+MCP Protocol Implementation
+The implementation follows the MCP specification:
+
+Initialization: Proper capability negotiation
+Tool Discovery: Dynamic tool listing via tools/list
+Tool Execution: Standardized tools/call interface
+Error Handling: Proper MCP error responses
+Communication Flow
+Client connects to server via TCP socket
+Client sends initialize request
+Server responds with capabilities
+Client can list available tools
+Client calls tools with structured parameters
+Server processes requests and returns formatted results
+Real JIRA Integration
+To connect to a real JIRA instance, modify the JiraService class:
+
+java
+// Replace mock methods with actual HTTP calls
+public JiraIssue getIssue(String issueKey) {
+    // Make GET request to /rest/api/2/issue/{issueKey}
+    // Parse JSON response into JiraIssue object
+}
+
+public List<JiraIssue> searchIssues(String jql) {
+    // Make GET request to /rest/api/2/search with JQL parameter
+    // Parse JSON response into List<JiraIssue>
+}
+
+public JiraIssue createIssue(String projectKey, String summary, String description, String issueType) {
+    // Make POST request to /rest/api/2/issue with issue data
+    // Parse JSON response to get created issue
+}
+Contributing
+Fork the repository
+Create a feature branch
+Make your changes
+Add tests for new functionality
+Submit a pull request
+License
+This project is provided as-is for educational and development purposes.
+
